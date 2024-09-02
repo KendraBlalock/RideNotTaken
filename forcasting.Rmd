@@ -1,0 +1,295 @@
+---
+title: "The Ride Not Taken"
+output: html_document
+date: "2024-09-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+![](bike2.png)
+
+### Determining the Goal
+The focus of this short project is to try my hand at forecasting seasonal data.
+
+### Finding the Data
+The city of Seattle provides an open data portal for public access. The site hosts a wide variety of data related to everything from education to public safety to city financials. For this project I selected data from the transportation section. 
+
+The Fremont Bridge is one of Seattle's iconic bridges and also a major thoroughfare for a bike path towards the business districts of South Lake Union and Downtown. The city has tracked the number of bicycles that travel over the bridge in both directions since 2012. The data can be downloaded 
+[here](https://data.seattle.gov/Transportation/Fremont-Bridge-Bicycle-Counter/65db-xm6k/about_data). 
+
+
+### Preparing the Data
+```{r prepdata}
+#load libraries
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(forecast)
+library(fpp3)
+
+#load data
+counter <- read.csv("Fremont_Bridge_Bicycle_Counter_20240724.csv")
+
+#review variable names 
+names(counter)
+
+#rename columns
+names(counter) <- c("Date_o", "Total", "West", "East")
+
+#review data
+head(counter, 10)
+
+#view count of missing Total field
+counter %>% filter(is.na(Total)) %>% count()
+
+#replace the small number of missing counts with average Total for the whole dataset
+#note: more complex imputation methods could be employed, but I am choosing to keep it simple given the small number of missing data and the overall focus of this project. 
+counter$Total[is.na(counter$Total)] <- mean(counter$Total, na.rm = T)
+
+#format the date variable
+counter$Date_f <- mdy_hms(counter$Date_o)
+
+#separate out date variable into year, month, day of the week, and hour variables
+counter$Year <- year(counter$Date_f)
+counter$Month <- month(counter$Date_f)
+counter$WDay <- wday(counter$Date_f)
+counter$Hour <- hour(counter$Date_f)
+
+```
+
+### Reviewing the Trends
+With the data updated, I then plotted the data in a variety of ways to get the overall feel for the type of seasonal trends that may be present in the data.  
+
+```{r trends1}
+#Totals over time
+ggplot(counter, aes(x=Date_f, y=Total)) +
+  geom_point(size =0.5, colour = "#03588C") + 
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 20))+
+  labs(title = "Total Bike Trips By Hour", 
+       x = "", 
+       y = "Count") + 
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+```
+
+With a quick glace we can easily see that there are some seasonal effects in the data. I also noted a significant drop in counts starting in 2020. This caused me to shift my focus from my original plan of forecasting expected bike trips in the future (2024-2025) to "forecasting" what the expected bike trip counts would have been if COVID and related lock-downs did not occur. 
+
+Next I created a few plots that were a bit more simplistic to try to see how complicated the seasonality may be. I imagined the number of bike trips would vary greatly by time of day (rush hour vs middle of the night), day of the week (workday vs. weekend), and time of the year (sunny summer vs. cold and rainy winter). For each, I plotted the average totals to get an idea of the general trend. 
+
+```{r trends}
+#Average total by month 
+month_trend <- counter %>% 
+  group_by(Month) %>% 
+  summarize(Average_total = mean(Total, na.rm = T)) 
+
+ggplot(month_trend, aes(x=Month, y=Average_total)) +
+  geom_col(fill ="#03588C") + 
+  scale_x_continuous(breaks=seq(1,12,1),
+        labels=c("Jan","Feb", "Mar", "Apr", "May", "June", "July", "Aug",
+                 "Sept", "Oct", "Nov", "Dec")) +
+  labs(title = "Average Bike Trips By Month", 
+       x = "", 
+       y = "Count") + 
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+
+#Average total by day of week
+wday_trend <- counter %>% 
+  group_by(WDay) %>% 
+  summarize(Average_total = mean(Total, na.rm = T)) 
+
+ggplot(wday_trend, aes(x=WDay, y=Average_total)) +
+  geom_col(fill ="#03588C") + 
+  scale_x_continuous(breaks=seq(1,7,1),
+        labels=c("Sun", "Mon", "Tues", "Wed", "Thu", "Fri", "Sat")) +
+  labs(title = "Average Bike Trips By Day of Week", 
+       x = "", 
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.7),
+        plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+#Average total by hour in the day
+hour_trend <- counter %>% 
+  group_by(Hour) %>% 
+  summarize(Average_total = mean(Total, na.rm = T))  
+
+ggplot(hour_trend, aes(x=Hour, y=Average_total)) +
+  geom_col(fill ="#03588C") + 
+  scale_x_continuous(breaks=seq(0,23,1),
+                     labels=c("Midnight", "1am", "2am", "3am","4am", "5am", "6am",
+                              "7am", "8am", "9am", "10am", "11am", "Noon", "1pm",
+                              "2pm", "3pm", "4pm","5pm", "6pm", "7pm", "8pm",
+                              "9pm","10pm","11pm")) +
+  labs(title = "Average Bike Trips By Hour", 
+       x = "", 
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.7),
+        plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+```
+
+### Modeling the Pre-Pandemic Data
+Governor Jay Inslee declared a state of emergency on February 29, 2020, which was followed by a statewide stay-at-home order on March 23 that would last at least two weeks. I chose the March 23rd stay-at-home order as the pre/post pandemic cutoff. While the stay-at-home order only lasted a few weeks, many Seattle employers allowed their staff to continue to work from home for months following the lockdown. Additionally, many public events were canceled or downsized during this time. This led to the lingering decreased bike counts seen in the above plot.   
+
+Given the complexity of the multiple seasonal effects, I decided to forecast using the STL() package: Seasonal Decomposition of Time Series by Loess. To prevent negative predictions, I took the log of the *Total* variable and then created the inverse log of the results.  
+
+```{r model}
+#create a tsibble dataset for the model
+counter_prepan <- counter %>% 
+  filter(Date_f < "2020-03-23") %>% 
+  mutate(Total_log = case_when(
+    Total == 0 ~ 0,
+    T~ log(Total)))  %>% 
+  select(Date_f, Total, Total_log) %>%  
+  as_tsibble(index=Date_f) 
+
+#create the post-pandemic dataset for post-model comparison
+counter_postpan <- counter %>% filter(Date_f >= "2020-03-23") %>% select(Date_f, Total) 
+
+#view the trend and seasonality of the log transformed total trips variable
+counter_prepan  %>% 
+  model(STL(Total_log ~ season(period = 24) +
+                    season(period = 7*24) +
+                    season(period = 365*24),
+        robust = TRUE)) %>% 
+  components() %>% 
+  autoplot(color = "#03588C") + 
+  labs(x = "") +
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        text = element_text(color = "#03588C"))
+
+#build the model including daily, weekly, and yearly seasonality
+dcmp_c_p <- decomposition_model(STL(Total_log ~ season(period = 24) +
+                    season(period = 7*24) +
+                    season(period = 365*24),
+                    robust = TRUE),
+                    ETS(season_adjust ~ season("N")))
+
+#run the model and forecast out the number of rows available in the post-pandemic cutoff time period 
+fcst <- counter_prepan |>
+  model(dcmp_c_p) |>
+  forecast(h = 37457)
+
+#check that the end of the forecasted data is the same end point as the observed data
+max(fcst$Date_f) == max(counter_postpan$Date_f)
+
+#view the projected ride totals and confidence intervals. 
+fcst %>% autoplot(color = "#03588C") + 
+  labs(x = "", 
+       y = "Count",
+       title =  "Projected Ride Totals with Confidence Intervals") +
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+  
+
+```
+
+### Comparing the Results
+With the projected values in hand, I merged them back in with the observed ride totals from March 24th, 2020 and onward. 
+```{r compare}
+#turn the results into a data.frame and rename
+results <- data.frame(fcst$Date_f, fcst$.mean)
+names(results) <- c("Date_f","Estimated_total_log")
+
+#join the results to the original observations 
+compare_df <- counter_postpan %>% left_join(results)
+
+#update the estimated total to be the inverse log 
+compare_df$Estimated_total <- exp(compare_df$Estimated_total_log)
+
+#map the original pos-pandemic counts and then estimated counts
+ggplot(compare_df, aes(x=Date_f, y=Total)) +
+  geom_point(size =0.5, colour = "#03588C") + 
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 12))+
+  labs(title = "Observed Bike Trips By Hour Following The Pandemic Outbreak", 
+       x = "", 
+       y = "Count") + 
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+
+ggplot(compare_df, aes(x=Date_f, y=Estimated_total)) +
+  geom_point(size =0.5, colour = "#03588C") + 
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 12))+
+  labs(title = "Estimated Bike Trips By Hour Without COVID", 
+       x = "", 
+       y = "Count") + 
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+
+```
+
+The general shape of the projected values looks reasonable. From here I ran a more narrowed look at a one-week period of the initial lockdown to show the comparison. 
+
+```{r compare2}
+
+#map the week of March 24, 2020 - March 30, 2020
+compare_df %>% 
+  filter(Date_f <= "2020-03-30") %>% 
+  select(Date_f, Total, Estimated_total) %>% 
+  gather("id", "value", 2:3) %>% 
+ggplot(aes(x=Date_f, y=value, group=id)) +
+  geom_line(aes(linetype=id, color= id))+
+  scale_linetype_manual(values=c("twodash", "solid"))+
+  scale_color_manual(values = c("#F21905","#03588C")) +
+  labs(title = "First Week Of COVID Lockdown", 
+       x = "", 
+       y = "Count") + 
+  theme(plot.title = element_text(hjust = 0.5, color = "#03588C"), 
+        axis.title = element_text(color = "#03588C"), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text = element_text(color = "#03588C"))
+
+
+```
+
+My final step is to estimate the number of bike trips that were not taken following the start of the pandemic. While some of these may be a result of direct lockdown orders, other "missed" trips may be a result from changing work habits (increased work from home days) or changes in the population of the surrounding communities. 
+
+```{r compare3}
+
+#Total "missed" bike trips
+compare_df <- compare_df %>% 
+  mutate(Diff = Estimated_total - Total)
+  
+sum(compare_df$Diff)
+
+```
+
+"The only thing we know about the future is that it will be different." — Peter Drucker
+
+![](bothsidebridge.png)
+
